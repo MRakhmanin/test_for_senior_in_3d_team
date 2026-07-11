@@ -1,0 +1,15 @@
+[project]
+name = "test-for-senior-in-3d-team"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.116.1",
+    "matplotlib>=3.11.0",
+    "numpy>=2.4.6",
+    "python-multipart>=0.0.20",
+    "simpleitk>=2.5.5",
+    "torch>=2.13.0",
+    "uvicorn>=0.35.0",
+]
