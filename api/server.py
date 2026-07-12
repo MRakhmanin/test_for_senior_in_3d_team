@@ -23,6 +23,7 @@ DEFAULT_SPACING = 2.0
 DEFAULT_WL = 40.0
 DEFAULT_WW = 150.0
 DEFAULT_INPUT_SHAPE = (128, 128, 128)  # D, H, W
+DEFAULT_CHECKPOINT = "/app/checkpoints/angle_regressor_axis_cv3_bs32_clip2_fold0_best.pt"
 
 
 class InferenceService:
@@ -34,11 +35,7 @@ class InferenceService:
             self.device = torch.device(device_env)
         print(f"[INFO] Inference device: {self.device}")
 
-        checkpoint_path = os.getenv("MODEL_CHECKPOINT")
-        if checkpoint_path is None:
-            raise RuntimeError(
-                "MODEL_CHECKPOINT env var is required and must point to .pt checkpoint."
-            )
+        checkpoint_path = os.getenv("MODEL_CHECKPOINT", DEFAULT_CHECKPOINT)
         ckpt_path = Path(checkpoint_path)
         if not ckpt_path.exists():
             raise RuntimeError(f"MODEL_CHECKPOINT not found: {ckpt_path}")

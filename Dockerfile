@@ -29,8 +29,8 @@ EXPOSE 8000
 
 # Provide your trained checkpoint path via env at runtime.
 # Example:
-# docker run -e MODEL_CHECKPOINT=/app/checkpoints/best.pt -p 8000:8000 ...
-ENV MODEL_CHECKPOINT=/app/checkpoints/best.pt
+# docker run -e MODEL_CHECKPOINT=/app/checkpoints/angle_regressor_axis_cv3_bs32_clip2_fold0_best.pt -p 8000:8000 ...
+ENV MODEL_CHECKPOINT=/app/checkpoints/angle_regressor_axis_cv3_bs32_clip2_fold0_best.pt
 ENV DEVICE=auto
 
 CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8000"]

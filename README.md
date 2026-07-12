@@ -1,3 +1,5 @@
+# [ОТЧЁТ](https://disk.yandex.ru/i/vGEG4pFNSx9fYw)
+
 # Сервис нормализации ориентации КТ (Docker + FastAPI)
 
 Этот репозиторий содержит API-сервис на FastAPI, который:
@@ -10,7 +12,7 @@
 
 - Установленный Docker.
 - Файл обученной модели (`.pt` checkpoint), например:
-  - `artifacts/train_runs/angle_regressor_axis_cv3/fold_0/best.pt`
+  - `artifacts/angle_regressor_axis_cv3_bs32_clip2_fold0_best.pt`
 
 ## 2. Сборка Docker-образа
 
@@ -24,7 +26,7 @@ docker build -t ct-orientation-api .
 
 ```bash
 docker run --rm -p 8000:8000 \
-  -e MODEL_CHECKPOINT=/app/checkpoints/best.pt \
+  -e MODEL_CHECKPOINT=/app/checkpoints/angle_regressor_axis_cv3_bs32_clip2_fold0_best.pt \
   -e DEVICE=cpu \
   -v /absolute/path/to/checkpoints:/app/checkpoints \
   ct-orientation-api
@@ -32,13 +34,13 @@ docker run --rm -p 8000:8000 \
 
 Где:
 - `MODEL_CHECKPOINT` — путь к чекпоинту внутри контейнера;
-- `/absolute/path/to/checkpoints` — путь на вашей машине, где лежит `best.pt`.
+- `/absolute/path/to/checkpoints` — путь на вашей машине, где лежит `angle_regressor_axis_cv3_bs32_clip2_fold0_best.pt`.
 
 ## 4. Запуск контейнера (GPU, если доступна)
 
 ```bash
 docker run --rm --gpus all -p 8000:8000 \
-  -e MODEL_CHECKPOINT=/app/checkpoints/best.pt \
+  -e MODEL_CHECKPOINT=/app/checkpoints/angle_regressor_axis_cv3_bs32_clip2_fold0_best.pt \
   -e DEVICE=auto \
   -v /absolute/path/to/checkpoints:/app/checkpoints \
   ct-orientation-api
@@ -68,7 +70,22 @@ curl -X POST "http://localhost:8000/process" \
   --output result.zip
 ```
 
-## 6. Формат результата
+## 6. Локальный запуск через `main.py`
+
+Если нужно обработать один NIfTI локально без запуска API:
+
+```bash
+python3 main.py \
+  --input /absolute/path/to/CQ500CT6.nii.gz \
+  --output /absolute/path/to/CQ500CT6_rotated.nii.gz \
+  --checkpoint artifacts/angle_regressor_axis_cv3_bs32_clip2_fold0_best.pt
+```
+
+Опционально можно добавить `--device auto|cpu|cuda` (по умолчанию `auto`).
+
+Скрипт сохранит повёрнутый NIfTI и выведет в stdout JSON с `angles_deg` и `rotation_matrix_3x3`.
+
+## 7. Формат результата
 
 Сервис возвращает ZIP-архив `result.zip`:
 - `rotated.nii.gz` — повёрнутый КТ-объём;
@@ -91,7 +108,7 @@ curl -X POST "http://localhost:8000/process" \
 }
 ```
 
-## 7. Типовые проблемы
+## 8. Типовые проблемы
 
 - **`MODEL_CHECKPOINT env var is required`**  
   Не задана переменная `MODEL_CHECKPOINT`.

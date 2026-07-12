@@ -28,6 +28,7 @@ TARGET_ORIENTATION = "LPS"
 @dataclass
 class StepResult:
     step_name: str
+    angle_name: str
     angle_deg: float
     status: str
     n_points: int
@@ -36,7 +37,7 @@ class StepResult:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Baseline sequential 3-angle estimation from bone mask with slab-based "
+            "Baseline sequential 3-angle estimation from bone mask with single-slice "
             "2D ellipse-axis approximation."
         )
     )
@@ -67,20 +68,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--axial-offset-mm",
         type=float,
-        default=30.0,
-        help="Offset from top-most bone slice for axial step (default: 30 mm).",
-    )
-    parser.add_argument(
-        "--top-slab-mm",
-        type=float,
-        default=50.0,
-        help="Top slab thickness used for coronal and sagittal steps (default: 50 mm).",
-    )
-    parser.add_argument(
-        "--mid-band-mm",
-        type=float,
-        default=10.0,
-        help="Midline slab thickness for coronal/sagittal projections (default: 10 mm).",
+        default=40.0,
+        help="Offset from lowest bone slice for axial step (default: 15 mm).",
     )
     parser.add_argument(
         "--save-qc",
@@ -120,9 +109,45 @@ def make_bone_mask(ct_img: sitk.Image, threshold_hu: float) -> np.ndarray:
     return (hu >= threshold_hu).astype(np.uint8)
 
 
+def compute_head_center_indices(ct_img: sitk.Image) -> tuple[int, int, int]:
+    """
+    Match visualization convention: center from foreground HU > -300.
+    Returns (z, y, x) voxel indices.
+    """
+    hu = sitk_image_to_numpy(ct_img)
+    foreground = hu > -300.0
+    coords = np.argwhere(foreground)
+    if coords.size == 0:
+        zc, yc, xc = np.array(hu.shape) // 2
+        return int(zc), int(yc), int(xc)
+    zc, yc, xc = coords.mean(axis=0)
+    return int(round(float(zc))), int(round(float(yc))), int(round(float(xc)))
+
+
 def normalize_angle_to_half_turn(angle_deg: float) -> float:
     # map to [-90, 90)
     return ((angle_deg + 90.0) % 180.0) - 90.0
+
+
+def keep_largest_connected_component_2d(binary_2d: np.ndarray) -> np.ndarray:
+    """
+    Keep only the largest connected component in a 2D binary mask.
+    """
+    binary = (binary_2d > 0).astype(np.uint8)
+    if binary.sum() == 0:
+        return binary
+
+    img = sitk.GetImageFromArray(binary)
+    cc = sitk.ConnectedComponent(img)
+    stats = sitk.LabelShapeStatisticsImageFilter()
+    stats.Execute(cc)
+    labels = list(stats.GetLabels())
+    if not labels:
+        return np.zeros_like(binary, dtype=np.uint8)
+
+    largest_label = max(labels, key=lambda lbl: stats.GetNumberOfPixels(lbl))
+    cc_np = sitk.GetArrayFromImage(cc)
+    return (cc_np == int(largest_label)).astype(np.uint8)
 
 
 def fit_major_axis_angle_deg(binary_2d: np.ndarray) -> tuple[float | None, np.ndarray]:
@@ -175,82 +200,76 @@ def estimate_axial_angle(
 ) -> tuple[StepResult, np.ndarray]:
     z_nonzero = np.where(bone_zyx.any(axis=(1, 2)))[0]
     if z_nonzero.size == 0:
-        return StepResult("axial", 0.0, "empty_bone_mask", 0), np.zeros((1, 1), dtype=np.uint8)
+        return StepResult("axial", "yaw", 0.0, "empty_bone_mask", 0), np.zeros((1, 1), dtype=np.uint8)
 
-    z_top = int(z_nonzero.min())
+    z_lowest = int(z_nonzero.max())
     z_idx = min(
-        int(z_top + round(offset_mm / spacing)),
+        max(int(z_lowest - round(offset_mm / spacing)), 0),
         bone_zyx.shape[0] - 1,
     )
-    img = bone_zyx[z_idx, :, :]
+    img = keep_largest_connected_component_2d(bone_zyx[z_idx, :, :])
 
     raw_angle, pts = fit_major_axis_angle_deg(img)
     if raw_angle is None:
-        return StepResult("axial", 0.0, "not_enough_points", int(pts.shape[0])), img
+        return StepResult("axial", "yaw", 0.0, "not_enough_points", int(pts.shape[0])), img
 
-    # Correct towards horizontal major axis.
-    angle_deg = normalize_angle_to_half_turn(-raw_angle)
-    return StepResult("axial", angle_deg, "ok", int(pts.shape[0])), img
+    # For yaw we want the major axis to become vertical (orthogonal to horizontal).
+    angle_deg = normalize_angle_to_half_turn(90.0 - raw_angle)
+    return StepResult("axial", "yaw", angle_deg, "ok", int(pts.shape[0])), img
 
 
 def estimate_coronal_angle(
     bone_zyx: np.ndarray,
-    spacing: float,
-    top_slab_mm: float,
-    mid_band_mm: float,
+    y_idx: int,
 ) -> tuple[StepResult, np.ndarray]:
     z_nonzero = np.where(bone_zyx.any(axis=(1, 2)))[0]
     if z_nonzero.size == 0:
-        return StepResult("coronal", 0.0, "empty_bone_mask", 0), np.zeros((1, 1), dtype=np.uint8)
+        return StepResult("coronal", "pitch", 0.0, "empty_bone_mask", 0), np.zeros((1, 1), dtype=np.uint8)
 
-    z_top = int(z_nonzero.min())
-    slab = max(1, int(round(top_slab_mm / spacing)))
-    z1 = min(z_top + slab, bone_zyx.shape[0])
-
-    y_mid = bone_zyx.shape[1] // 2
-    band = max(1, int(round(mid_band_mm / spacing / 2.0)))
-    y0 = max(0, y_mid - band)
-    y1 = min(bone_zyx.shape[1], y_mid + band + 1)
-
-    # [z, y, x] -> collapse y band => [z, x]
-    img = bone_zyx[z_top:z1, y0:y1, :].max(axis=1)
+    y_idx = max(0, min(bone_zyx.shape[1] - 1, int(y_idx)))
+    # Single coronal slice at head-center y: [z, x]
+    # For pitch, use only the upper hemisphere (upper half in current z convention).
+    z_lowest = int(z_nonzero.max())
+    z_highest = int(z_nonzero.min())
+    z_span = z_lowest - z_highest + 1
+    z_upper_len = max(1, int(round(0.5 * z_span)))
+    z0 = max(z_lowest - z_upper_len + 1, 0)
+    z1 = z_lowest + 1
+    img = keep_largest_connected_component_2d(bone_zyx[z0:z1, y_idx, :])
 
     raw_angle, pts = fit_major_axis_angle_deg(img)
     if raw_angle is None:
-        return StepResult("coronal", 0.0, "not_enough_points", int(pts.shape[0])), img
+        return StepResult("coronal", "pitch", 0.0, "not_enough_points", int(pts.shape[0])), img
 
     angle_deg = normalize_angle_to_half_turn(-raw_angle)
-    return StepResult("coronal", angle_deg, "ok", int(pts.shape[0])), img
+    return StepResult("coronal", "pitch", angle_deg, "ok", int(pts.shape[0])), img
 
 
 def estimate_sagittal_angle(
     bone_zyx: np.ndarray,
-    spacing: float,
-    top_slab_mm: float,
-    mid_band_mm: float,
+    x_idx: int,
 ) -> tuple[StepResult, np.ndarray]:
     z_nonzero = np.where(bone_zyx.any(axis=(1, 2)))[0]
     if z_nonzero.size == 0:
-        return StepResult("sagittal", 0.0, "empty_bone_mask", 0), np.zeros((1, 1), dtype=np.uint8)
+        return StepResult("sagittal", "roll", 0.0, "empty_bone_mask", 0), np.zeros((1, 1), dtype=np.uint8)
 
-    z_top = int(z_nonzero.min())
-    slab = max(1, int(round(top_slab_mm / spacing)))
-    z1 = min(z_top + slab, bone_zyx.shape[0])
-
-    x_mid = bone_zyx.shape[2] // 2
-    band = max(1, int(round(mid_band_mm / spacing / 2.0)))
-    x0 = max(0, x_mid - band)
-    x1 = min(bone_zyx.shape[2], x_mid + band + 1)
-
-    # [z, y, x] -> collapse x band => [z, y]
-    img = bone_zyx[z_top:z1, :, x0:x1].max(axis=2)
+    x_idx = max(0, min(bone_zyx.shape[2] - 1, int(x_idx)))
+    # Single sagittal slice at head-center x: [z, y]
+    # For roll, use only the upper hemisphere (upper half in current z convention).
+    z_lowest = int(z_nonzero.max())
+    z_highest = int(z_nonzero.min())
+    z_span = z_lowest - z_highest + 1
+    z_upper_len = max(1, int(round(0.5 * z_span)))
+    z0 = max(z_lowest - z_upper_len + 1, 0)
+    z1 = z_lowest + 1
+    img = keep_largest_connected_component_2d(bone_zyx[z0:z1, :, x_idx])
 
     raw_angle, pts = fit_major_axis_angle_deg(img)
     if raw_angle is None:
-        return StepResult("sagittal", 0.0, "not_enough_points", int(pts.shape[0])), img
+        return StepResult("sagittal", "roll", 0.0, "not_enough_points", int(pts.shape[0])), img
 
     angle_deg = normalize_angle_to_half_turn(-raw_angle)
-    return StepResult("sagittal", angle_deg, "ok", int(pts.shape[0])), img
+    return StepResult("sagittal", "roll", angle_deg, "ok", int(pts.shape[0])), img
 
 
 def save_qc_image(binary_2d: np.ndarray, step: StepResult, out_path: Path) -> None:
@@ -258,6 +277,16 @@ def save_qc_image(binary_2d: np.ndarray, step: StepResult, out_path: Path) -> No
     fig, ax = plt.subplots(1, 1, figsize=(5, 5))
     ax.imshow(binary_2d, cmap="gray", origin="lower")
     ax.set_title(f"{step.step_name}: angle={step.angle_deg:.2f} deg ({step.status})")
+    raw_angle, pts = fit_major_axis_angle_deg(binary_2d)
+    if raw_angle is not None and pts.shape[0] > 0:
+        center = pts.mean(axis=0)
+        theta = math.radians(raw_angle)
+        direction = np.array([math.cos(theta), math.sin(theta)], dtype=np.float64)
+        length = 0.45 * max(binary_2d.shape[0], binary_2d.shape[1])
+        p0 = center - length * direction
+        p1 = center + length * direction
+        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], "r-", linewidth=2)
+        ax.scatter([center[0]], [center[1]], c="yellow", s=20, marker="x")
     ax.set_xticks([])
     ax.set_yticks([])
     fig.tight_layout()
@@ -271,7 +300,7 @@ def process_study(path: Path, args: argparse.Namespace) -> tuple[str, list[StepR
 
     step_results: list[StepResult] = []
 
-    # Step 1: axial -> rotate around z
+    # Step 1: axial -> rotate around z (yaw)
     bone = make_bone_mask(ct, threshold_hu=args.bone_threshold_hu)
     axial_step, axial_img = estimate_axial_angle(
         bone_zyx=bone,
@@ -287,37 +316,51 @@ def process_study(path: Path, args: argparse.Namespace) -> tuple[str, list[StepR
         )
     ct = rotate_ct_single_axis(ct, angle_deg=axial_step.angle_deg, axis="z")
 
-    # Step 2: coronal -> rotate around y
+    # Step 2: coronal -> rotate around y (pitch)
     bone = make_bone_mask(ct, threshold_hu=args.bone_threshold_hu)
+    _, y_center, _ = compute_head_center_indices(ct)
     coronal_step, coronal_img = estimate_coronal_angle(
         bone_zyx=bone,
-        spacing=args.spacing,
-        top_slab_mm=args.top_slab_mm,
-        mid_band_mm=args.mid_band_mm,
+        y_idx=y_center,
     )
     step_results.append(coronal_step)
     if args.save_qc:
+        # QC label swap only: keep estimation unchanged, match visualization naming.
+        coronal_qc_step = StepResult(
+            step_name="sagittal",
+            angle_name=coronal_step.angle_name,
+            angle_deg=coronal_step.angle_deg,
+            status=coronal_step.status,
+            n_points=coronal_step.n_points,
+        )
         save_qc_image(
             coronal_img,
-            coronal_step,
-            args.output_dir / study_id / "qc_coronal.png",
+            coronal_qc_step,
+            args.output_dir / study_id / "qc_sagittal.png",
         )
     ct = rotate_ct_single_axis(ct, angle_deg=coronal_step.angle_deg, axis="y")
 
-    # Step 3: sagittal -> rotate around x
+    # Step 3: sagittal -> rotate around x (roll)
     bone = make_bone_mask(ct, threshold_hu=args.bone_threshold_hu)
+    _, _, x_center = compute_head_center_indices(ct)
     sagittal_step, sagittal_img = estimate_sagittal_angle(
         bone_zyx=bone,
-        spacing=args.spacing,
-        top_slab_mm=args.top_slab_mm,
-        mid_band_mm=args.mid_band_mm,
+        x_idx=x_center,
     )
     step_results.append(sagittal_step)
     if args.save_qc:
+        # QC label swap only: keep estimation unchanged, match visualization naming.
+        sagittal_qc_step = StepResult(
+            step_name="coronal",
+            angle_name=sagittal_step.angle_name,
+            angle_deg=sagittal_step.angle_deg,
+            status=sagittal_step.status,
+            n_points=sagittal_step.n_points,
+        )
         save_qc_image(
             sagittal_img,
-            sagittal_step,
-            args.output_dir / study_id / "qc_sagittal.png",
+            sagittal_qc_step,
+            args.output_dir / study_id / "qc_coronal.png",
         )
     ct = rotate_ct_single_axis(ct, angle_deg=sagittal_step.angle_deg, axis="x")
 
@@ -332,6 +375,7 @@ def save_angles_csv(rows: list[dict[str, str | float | int]], out_path: Path) ->
             [
                 "study_id",
                 "step_name",
+                "angle_name",
                 "angle_deg",
                 "status",
                 "n_points",
@@ -342,6 +386,7 @@ def save_angles_csv(rows: list[dict[str, str | float | int]], out_path: Path) ->
                 [
                     row["study_id"],
                     row["step_name"],
+                    row["angle_name"],
                     row["angle_deg"],
                     row["status"],
                     row["n_points"],
@@ -356,6 +401,9 @@ def save_final_angles_csv(rows: list[dict[str, str | float]], out_path: Path) ->
         writer.writerow(
             [
                 "study_id",
+                "roll_deg",
+                "pitch_deg",
+                "yaw_deg",
                 "axial_deg",
                 "coronal_deg",
                 "sagittal_deg",
@@ -365,6 +413,9 @@ def save_final_angles_csv(rows: list[dict[str, str | float]], out_path: Path) ->
             writer.writerow(
                 [
                     row["study_id"],
+                    row["roll_deg"],
+                    row["pitch_deg"],
+                    row["yaw_deg"],
                     row["axial_deg"],
                     row["coronal_deg"],
                     row["sagittal_deg"],
@@ -404,6 +455,9 @@ def main() -> None:
         per_study_rows.append(
             {
                 "study_id": study_id,
+                "roll_deg": step_map["sagittal"].angle_deg,
+                "pitch_deg": step_map["coronal"].angle_deg,
+                "yaw_deg": step_map["axial"].angle_deg,
                 "axial_deg": step_map["axial"].angle_deg,
                 "coronal_deg": step_map["coronal"].angle_deg,
                 "sagittal_deg": step_map["sagittal"].angle_deg,
@@ -414,6 +468,7 @@ def main() -> None:
                 {
                     "study_id": study_id,
                     "step_name": s.step_name,
+                    "angle_name": s.angle_name,
                     "angle_deg": s.angle_deg,
                     "status": s.status,
                     "n_points": s.n_points,

@@ -73,7 +73,12 @@ def parse_args() -> argparse.Namespace:
 
     # Baseline args.
     parser.add_argument("--bone-threshold-hu", type=float, default=300.0)
-    parser.add_argument("--axial-offset-mm", type=float, default=30.0)
+    parser.add_argument(
+        "--axial-offset-mm",
+        type=float,
+        default=15.0,
+        help="Offset from lowest bone slice for baseline axial step (default: 15).",
+    )
     parser.add_argument("--top-slab-mm", type=float, default=50.0)
     parser.add_argument("--mid-band-mm", type=float, default=10.0)
     parser.add_argument("--save-qc", action="store_true")
@@ -203,11 +208,25 @@ def save_summary(rows: list[dict[str, str | float]], out_csv: Path, method: str)
     with out_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if method == "baseline":
-            writer.writerow(["study_id", "axial_deg", "coronal_deg", "sagittal_deg", "save_mode"])
+            writer.writerow(
+                [
+                    "study_id",
+                    "roll_deg",
+                    "pitch_deg",
+                    "yaw_deg",
+                    "axial_deg",
+                    "coronal_deg",
+                    "sagittal_deg",
+                    "save_mode",
+                ]
+            )
             for r in rows:
                 writer.writerow(
                     [
                         r["study_id"],
+                        r["roll_deg"],
+                        r["pitch_deg"],
+                        r["yaw_deg"],
                         r["axial_deg"],
                         r["coronal_deg"],
                         r["sagittal_deg"],
@@ -280,6 +299,15 @@ def main() -> None:
             rows.append(
                 {
                     "study_id": sid,
+                    # Match estimate_head_angles.py notation:
+                    # roll(X), pitch(Y), yaw(Z).
+                    # Baseline steps are:
+                    # axial -> rotate around Z
+                    # coronal -> rotate around Y
+                    # sagittal -> rotate around X
+                    "roll_deg": float(step_map["sagittal"].angle_deg),
+                    "pitch_deg": float(step_map["coronal"].angle_deg),
+                    "yaw_deg": float(step_map["axial"].angle_deg),
                     "axial_deg": float(step_map["axial"].angle_deg),
                     "coronal_deg": float(step_map["coronal"].angle_deg),
                     "sagittal_deg": float(step_map["sagittal"].angle_deg),

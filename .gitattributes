@@ -1,0 +1,6 @@
+artifacts/data_visulisation.html filter=lfs diff=lfs merge=lfs -text
+artifacts/pseudo_labels_visulisation.html filter=lfs diff=lfs merge=lfs -text
+artifacts/rotation_vis_axis.html filter=lfs diff=lfs merge=lfs -text
+artifacts/rotation_vis_reference.html filter=lfs diff=lfs merge=lfs -text
+artifacts/rotation_vis_gpa.html filter=lfs diff=lfs merge=lfs -text
+artifacts/angle_regressor_axis_cv3_bs32_clip2_fold0_best.pt filter=lfs diff=lfs merge=lfs -text
