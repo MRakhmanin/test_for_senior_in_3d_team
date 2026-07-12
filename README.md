@@ -1,4 +1,4 @@
-# [ОТЧЁТ](https://disk.yandex.ru/i/vGEG4pFNSx9fYw)
+# [ОТЧЁТ](https://disk.yandex.ru/d/qFhZPTKMAaOkMw)
 
 # Сервис нормализации ориентации КТ (Docker + FastAPI)
 
